@@ -7,6 +7,7 @@ Uses uv by default; detects conda/venv and uses pyproject.toml.
 
 Usage:
     uv run install.py [--force] [--dry-run]
+    uv run install.py --dev    # Generate hopper_ollama.py in project dir for symlink development
 """
 
 import sys
@@ -102,6 +103,7 @@ def main():
     parser = argparse.ArgumentParser(description="Install HopperOllama into Hopper Scripts")
     parser.add_argument("--force", action="store_true", help="Overwrite existing script")
     parser.add_argument("--dry-run", action="store_true", help="Only print what would be done")
+    parser.add_argument("--dev", action="store_true", help="Generate hopper_ollama.py in project dir only (no copy to Hopper); for symlink-based development")
     args = parser.parse_args()
 
     print("HopperOllama installer")
@@ -113,10 +115,10 @@ def main():
         print(f"Template not found: {template_path}")
         sys.exit(1)
     install_dependencies(env_info, dry_run=args.dry_run)
-    configured = "hopper_ollama_configured.py"
+    dev_output = "hopper_ollama.py" if args.dev else "hopper_ollama_configured.py"
     substitute_template(
         template_path,
-        configured,
+        dev_output,
         {
             "{{PYTHON_LIB_DYNLOAD}}": paths["lib_dynload"],
             "{{PYTHON_LIB_PATH}}": paths["lib_path"],
@@ -124,8 +126,16 @@ def main():
         },
         dry_run=args.dry_run,
     )
+    if args.dev:
+        print("=" * 50)
+        print("Development script generated:", os.path.abspath(dev_output))
+        hopper_dir = get_hopper_script_dir()
+        print("Symlink to Hopper Scripts to test without re-installing:")
+        print(f'  ln -s "$(pwd)/{dev_output}" "{hopper_dir}/"')
+        return
     hopper_dir = get_hopper_script_dir()
     target = os.path.join(hopper_dir, "hopper_ollama.py")
+    configured = dev_output
     if args.dry_run:
         print(f"Would copy to: {target}")
     else:

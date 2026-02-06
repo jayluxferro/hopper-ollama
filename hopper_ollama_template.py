@@ -22,10 +22,18 @@ def _isatty_false():
     return False
 sys.stdout.isatty = _isatty_false
 
+# When run from Python (e.g. tests), use mock Document if available
+if "python" in sys.executable:
+    try:
+        from tests.mock_hopper_ollama import Document
+    except ImportError:
+        pass
+
 import threading
-from typing import Annotated
+from typing import Annotated, Optional
 
 import httpx
+from pydantic import Field
 from fastmcp import FastMCP
 
 # Hopper injects Document when the script runs inside Hopper
@@ -126,6 +134,7 @@ def _get_procedure_name(segment, address: int) -> str:
 def get_hopper_context(address_or_name: str) -> dict:
     """Build context dict for the procedure at the given address or name.
     Used by both the in-Hopper commands and MCP tools.
+    Uses global doc: in-Hopper callers set doc to getCurrentDocument() first; MCP uses doc set by set_current_document(doc_id).
     """
     address = _resolve_address_or_name(address_or_name)
     segment, procedure = _get_segment_and_procedure(address)
@@ -180,6 +189,8 @@ def _run_analysis(context: dict, analysis_type: str, custom_question: str | None
 
 def explain_current_procedure():
     """Get the current cursor address, run Ollama 'explain', and log the result in Hopper."""
+    global doc
+    doc = Document.getCurrentDocument()
     addr = doc.getCurrentAddress()
     context = get_hopper_context(f"0x{addr:x}")
     result = _run_analysis(context, "explain")
@@ -188,6 +199,8 @@ def explain_current_procedure():
 
 def summarize_current_procedure():
     """Get the current cursor address, run Ollama 'summarize', and log the result in Hopper."""
+    global doc
+    doc = Document.getCurrentDocument()
     addr = doc.getCurrentAddress()
     context = get_hopper_context(f"0x{addr:x}")
     result = _run_analysis(context, "summarize")
@@ -196,6 +209,8 @@ def summarize_current_procedure():
 
 def suggest_name_current_procedure():
     """Get the current cursor address, run Ollama 'suggest_name', and log the result in Hopper."""
+    global doc
+    doc = Document.getCurrentDocument()
     addr = doc.getCurrentAddress()
     context = get_hopper_context(f"0x{addr:x}")
     result = _run_analysis(context, "suggest_name")
@@ -204,6 +219,8 @@ def suggest_name_current_procedure():
 
 def pattern_current_procedure():
     """Get the current cursor address, run Ollama 'pattern', and log the result in Hopper."""
+    global doc
+    doc = Document.getCurrentDocument()
     addr = doc.getCurrentAddress()
     context = get_hopper_context(f"0x{addr:x}")
     result = _run_analysis(context, "pattern")
@@ -213,6 +230,74 @@ def pattern_current_procedure():
 # ---------------------------------------------------------------------------
 # MCP tools (used when launch_server() is running and client calls the tool)
 # ---------------------------------------------------------------------------
+# Document selection: when you have multiple Hopper windows (e.g. one running
+# Ollama, one with the main binary), call get_all_documents then set_current_document(doc_id)
+# so analysis targets the right file. The AI can prompt the user to choose if needed.
+
+@mcp.tool
+def get_all_documents() -> dict:
+    """List all open Hopper documents with doc_id and names.
+    Use with set_current_document(doc_id) so analysis runs on the intended document
+    (e.g. when the server runs in a different window than the one you are analyzing)."""
+    all_docs = Document.getAllDocuments()
+    return {
+        "total_documents": len(all_docs),
+        "documents": [
+            {
+                "doc_id": i,
+                "document_name": d.getDocumentName(),
+                "executable_path": d.getExecutableFilePath(),
+                "entry_point": f"0x{d.getEntryPoint():x}",
+                "segment_count": d.getSegmentCount(),
+                "analysis_active": d.backgroundProcessActive(),
+            }
+            for i, d in enumerate(all_docs)
+        ],
+    }
+
+
+@mcp.tool
+def get_current_document() -> dict:
+    """Return which document is currently used for analysis (doc_id and name).
+    This is the document set at script load or by set_current_document(doc_id)."""
+    all_docs = Document.getAllDocuments()
+    doc_id = -1
+    for i, d in enumerate(all_docs):
+        if d == doc:
+            doc_id = i
+            break
+    return {
+        "doc_id": doc_id,
+        "document_name": doc.getDocumentName(),
+        "executable_path": doc.getExecutableFilePath(),
+        "entry_point": f"0x{doc.getEntryPoint():x}",
+        "segment_count": doc.getSegmentCount(),
+        "analysis_active": doc.backgroundProcessActive(),
+    }
+
+
+@mcp.tool
+def set_current_document(doc_id: Annotated[int, Field(description="Document ID from get_all_documents() or get_current_document()", ge=0)]) -> str:
+    """Set which open document to analyze. Call this when you have multiple documents or windows
+    so the user can pick the one to analyze (e.g. list from get_all_documents, then set_current_document(doc_id))."""
+    global doc
+    all_docs = Document.getAllDocuments()
+    if doc_id < 0 or doc_id >= len(all_docs):
+        raise ValueError(f"Invalid doc_id {doc_id}. Valid range: 0 to {len(all_docs) - 1}")
+    doc = all_docs[doc_id]
+    return f"Now analyzing doc_id {doc_id}: {doc.getDocumentName()}"
+
+
+def _ensure_document(doc_id: Optional[int]) -> None:
+    """If doc_id is set, switch global doc to that document."""
+    if doc_id is None:
+        return
+    global doc
+    all_docs = Document.getAllDocuments()
+    if doc_id < 0 or doc_id >= len(all_docs):
+        raise ValueError(f"Invalid doc_id {doc_id}. Valid range: 0 to {len(all_docs) - 1}")
+    doc = all_docs[doc_id]
+
 
 @mcp.tool
 def analyze_procedure(
@@ -221,8 +306,14 @@ def analyze_procedure(
         str,
         "One of: explain, summarize, suggest_name, pattern",
     ] = "explain",
+    doc_id: Annotated[
+        Optional[int],
+        Field(description="Optional. Document ID to analyze (from get_all_documents). If omitted, uses current document."),
+    ] = None,
 ) -> str:
-    """Run Ollama analysis on a procedure: explain, summarize, suggest a name, or describe its pattern."""
+    """Run Ollama analysis on a procedure: explain, summarize, suggest a name, or describe its pattern.
+    Pass doc_id to analyze a procedure in a specific document without calling set_current_document first."""
+    _ensure_document(doc_id)
     context = get_hopper_context(address_or_name)
     return _run_analysis(context, analysis_type)
 
@@ -231,8 +322,14 @@ def analyze_procedure(
 def ask_about_address(
     address_or_name: Annotated[str, "Address (e.g. 0x1000) or symbol name"],
     question: Annotated[str, "Your question about this procedure (e.g. 'What does this function return?')"],
+    doc_id: Annotated[
+        Optional[int],
+        Field(description="Optional. Document ID (from get_all_documents). If omitted, uses current document."),
+    ] = None,
 ) -> str:
-    """Ask a free-form question about the procedure at the given address. Uses Ollama."""
+    """Ask a free-form question about the procedure at the given address. Uses Ollama.
+    Pass doc_id to ask about a procedure in a specific document."""
+    _ensure_document(doc_id)
     context = get_hopper_context(address_or_name)
     return _run_analysis(context, "explain", custom_question=question)
 
@@ -241,8 +338,14 @@ def ask_about_address(
 def compare_procedures(
     address_or_name_1: Annotated[str, "First procedure: address (e.g. 0x1000) or symbol name"],
     address_or_name_2: Annotated[str, "Second procedure: address or symbol name"],
+    doc_id: Annotated[
+        Optional[int],
+        Field(description="Optional. Document ID for both procedures (from get_all_documents). If omitted, uses current document."),
+    ] = None,
 ) -> str:
-    """Compare two procedures: describe similarities, differences, and relationship. Uses Ollama."""
+    """Compare two procedures: describe similarities, differences, and relationship. Uses Ollama.
+    Pass doc_id to compare procedures in a specific document."""
+    _ensure_document(doc_id)
     ctx1 = get_hopper_context(address_or_name_1)
     ctx2 = get_hopper_context(address_or_name_2)
     code1 = ctx1.get("decompiled") or ctx1.get("assembly") or "(no code)"
@@ -296,6 +399,26 @@ def launch_server_ollama():
 launch_server = launch_server_ollama
 
 
+def launch_both_servers():
+    """Start both HopperPyMCP (42069) and HopperOllama (42070) in the same session. Blocks until both stop.
+    Requires the HopperPyMCP script to have been run first in this session (so run PyMCP script, then this script, then call launch_both_servers())."""
+    try:
+        pymcp_runner = run_server_pymcp
+    except NameError:
+        print("HopperPyMCP is not loaded. Run the HopperPyMCP script first, then run this script again.")
+        print("Then call launch_both_servers() to start both servers.")
+        return
+    t1 = threading.Thread(target=pymcp_runner, daemon=False)
+    t2 = threading.Thread(target=run_server_ollama, daemon=False)
+    t1.start()
+    t2.start()
+    print("Both servers started. Console will block until they stop.")
+    print("  HopperPyMCP:  http://localhost:42069/mcp/")
+    print("  HopperOllama: http://localhost:42070/mcp/")
+    t1.join()
+    t2.join()
+
+
 # ---------------------------------------------------------------------------
 # Banner when script loads in Hopper
 # ---------------------------------------------------------------------------
@@ -304,3 +427,4 @@ if "python" not in sys.executable:
     print("HopperOllama loaded.")
     print("  In-Hopper: explain_current_procedure()  |  summarize_current_procedure()  |  suggest_name_current_procedure()  |  pattern_current_procedure()")
     print("  MCP: launch_server_ollama()  →  http://localhost:42070/mcp/")
+    print("  Both: run HopperPyMCP script first, then launch_both_servers()  →  42069 + 42070")
