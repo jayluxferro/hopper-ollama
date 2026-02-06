@@ -139,3 +139,31 @@ async def test_analyze_procedure_invalid_doc_id():
                     {"address_or_name": "0x1000", "analysis_type": "explain", "doc_id": 99},
                 )
     assert "Invalid doc_id" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_list_strings():
+    """list_strings returns strings from segment (mocked segment has 3 strings)."""
+    async with Client(server.mcp) as client:
+        result = await client.call_tool("list_strings", {"segment_identifier": "0"})
+    data = result.data
+    assert data["segment"] == "__cstring"
+    assert data["total"] == 3
+    assert len(data["strings"]) == 3
+    addrs = [s["address"] for s in data["strings"]]
+    vals = [s["value"] for s in data["strings"]]
+    assert "0x2000" in addrs and "0x2008" in addrs and "0x2010" in addrs
+    assert "hello" in vals and "world" in vals and "https://example.com" in vals
+
+
+@pytest.mark.asyncio
+async def test_list_strings_filter():
+    """list_strings with filter_substring returns only matching strings."""
+    async with Client(server.mcp) as client:
+        result = await client.call_tool(
+            "list_strings",
+            {"segment_identifier": "0", "filter_substring": "example"},
+        )
+    data = result.data
+    assert data["total"] == 1
+    assert data["strings"][0]["value"] == "https://example.com"

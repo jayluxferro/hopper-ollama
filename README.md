@@ -4,15 +4,20 @@ Ollama-powered analysis for [Hopper Disassembler](https://www.hopperapp.com/): u
 
 ## Features
 
-- **In-Hopper script**: Run from Hopper’s Python prompt (results in the log):
-  - `explain_current_procedure()`, `summarize_current_procedure()`, `suggest_name_current_procedure()`, `pattern_current_procedure()`
-- **MCP server**: Run `launch_server_ollama()` in Hopper, then connect Cursor to get tools (the console blocks while the server runs):
-  - `get_all_documents()` — list open documents with `doc_id` and names
-  - `get_current_document()` — which document is currently used for analysis
-  - `set_current_document(doc_id)` — choose which document to analyze when you have multiple open
-  - `analyze_procedure(address_or_name, analysis_type, doc_id?)` — `explain` | `summarize` | `suggest_name` | `pattern` (optional `doc_id` to target a document in one call)
-  - `ask_about_address(address_or_name, question, doc_id?)` — free-form question about a procedure
-  - `compare_procedures(address_or_name_1, address_or_name_2, doc_id?)` — compare two procedures
+- **In-Hopper script** (run from Hopper’s Python prompt; results in the log):
+  - **Procedure / selection:** `explain_*`, `summarize_*`, `suggest_name_*`, `pattern_*`, `vulnerability_*`, `signature_*` (suffix `_current_procedure` or `_selection`; selection uses the current procedure if nothing is selected). Use `explain_current_procedure(stream=True)` to stream the explanation to the log as it arrives.
+  - **Apply / annotate:** `suggest_and_apply_name_current_procedure()` (prompt to apply or edit the name), `explain_and_comment_current_procedure()` (write explanation as a comment), `clear_comment_current_procedure()` (clear comment at current procedure).
+  - **Batch:** `summarize_procedures_in_selection()`, `explain_procedures_in_selection()`, `vulnerability_procedures_in_selection()`, `signature_procedures_in_selection()`, `pattern_procedures_in_selection()`, `suggest_name_procedures_in_selection()` — run that analysis on each procedure in the selected range.
+  - **Report:** `export_report_to_file(path?, analysis_type?)` — run analysis on procedures in selection (or current) and write markdown; `analysis_type` is one of `explain`, `summarize`, `suggest_name`, `pattern`, `vulnerability`, `signature` (default summarize); prompts for path if omitted.
+  - **Ollama:** `list_ollama_models()`, `ollama_status()`, `set_ollama_model(name)`, `get_ollama_model()`.
+- **MCP server** (run `launch_server_ollama()` in Hopper; console blocks while the server runs):
+  - **Documents:** `get_all_documents()`, `get_current_document()`, `set_current_document(doc_id)`.
+  - **Context (no LLM):** `get_procedure_context(...)`, `get_address_range_context(...)`. **RE navigation:** `list_segments(doc_id?)`; `list_procedures_in_segment(segment_index_or_name, doc_id?, limit?)`; `get_xrefs_to(address_hex, doc_id?)`; `list_strings(segment_index_or_name, doc_id?, filter_substring?, limit?)` — strings in a segment with optional search. Export/import listing is not available in the Hopper Python API. `set_comment_at_address(...)`, `clear_comment_at_address(...)`, `rename_procedure(...)`.
+  - **In-Hopper RE helpers:** `log_segments()` — log segment list; `log_procedures_in_current_segment(limit?)` — log procedures in the segment at cursor; `log_xrefs_to_current_address()` — log xrefs to cursor address.
+  - **Analysis:** `analyze_procedure(address_or_name, analysis_type, doc_id?, model?, temperature?, top_p?, num_predict?, set_comment?, apply_suggested_name?, include_extra_context?)` — types: `explain`, `summarize`, `suggest_name`, `pattern`, `vulnerability`, `signature`.
+  - **Range / batch:** `analyze_address_range(start_hex, end_hex, ...)`, `analyze_procedures([...], analysis_type, doc_id?, model?, num_predict?, delay_seconds?)`, `export_analysis_report([...], analysis_type?, output_path?, doc_id?, model?, delay_seconds?)`.
+  - **Other:** `ask_about_address(..., model?, temperature?, top_p?, num_predict?, include_extra_context?)`, `compare_procedures(...)`.
+  - **Ollama:** `list_ollama_models()`, `get_ollama_config()` (includes version, model, host, retry, etc.), `set_ollama_model(model_name)`.
 
 ## Requirements
 
@@ -41,10 +46,12 @@ This installs **hopper_ollama.py** into Hopper’s Scripts directory and ensures
 1. Open a binary in Hopper and move the cursor to a procedure (or an address inside it).
 2. Run the **hopper_ollama** script from Hopper’s Scripts (or paste its contents into the Python prompt).
 3. In the Python prompt, run one of:
-   - `explain_current_procedure()` — full explanation
-   - `summarize_current_procedure()` — short summary
-   - `suggest_name_current_procedure()` — suggested name
-   - `pattern_current_procedure()` — pattern/role (e.g. getter, parser)
+   - **By cursor or selection:** `explain_*`, `summarize_*`, `suggest_name_*`, `pattern_*`, `vulnerability_*`, `signature_*` (use `_current_procedure` or `_selection`; e.g. `explain_selection()`).
+   - **Apply name / write comment:** `suggest_and_apply_name_current_procedure()`, `explain_and_comment_current_procedure()`.
+   - **Batch:** Select a range, then e.g. `summarize_procedures_in_selection()`, `explain_procedures_in_selection()`, `vulnerability_procedures_in_selection()`, `signature_procedures_in_selection()`, `pattern_procedures_in_selection()`, `suggest_name_procedures_in_selection()`.
+   - **Report:** `export_report_to_file()` (prompts for path) or `export_report_to_file("/path/to/report.md", "vulnerability")`; `analysis_type` can be any of explain, summarize, suggest_name, pattern, vulnerability, signature.
+   - **RE navigation:** `log_segments()`, `log_procedures_in_current_segment(100)`, `log_xrefs_to_current_address()`.
+   - **Model:** `list_ollama_models()`, `ollama_status()`, `set_ollama_model("llama3.1:8b")`, `get_ollama_model()`.
 
 Output appears in Hopper’s log window.
 
@@ -93,8 +100,9 @@ You can ask in chat: “Which document should I analyze?” — the AI can call 
 
 ## Configuration
 
-- **Ollama model**: Set `OLLAMA_MODEL` (e.g. `llama3.1:8b`, `codellama`) or rely on the default `llama3.1:8b`.
-- **Ollama host**: Set `OLLAMA_HOST` if Ollama is not on `http://localhost:11434` (e.g. `http://192.168.1.10:11434`).
+- **Ollama model**: Set `OLLAMA_MODEL` (e.g. `llama3.1:8b`) or use `set_ollama_model(name)` in-Hopper / MCP for the session.
+- **Ollama host**: Set `OLLAMA_HOST` if Ollama is not on `http://localhost:11434`.
+- **Optional:** `OLLAMA_TEMPERATURE`, `OLLAMA_TOP_P` (generation); `OLLAMA_NUM_PREDICT` (max tokens to generate); `OLLAMA_SYSTEM_PROMPT` (overrides the default reverse-engineering system prompt); `OLLAMA_CONTEXT_MAX_CHARS` (default 8192 — truncate decompiled/assembly sent to the model; when over limit, head and tail are kept so the model sees entry and exit); `OLLAMA_RETRY_COUNT` (retries on 503/timeout, default 1); `OLLAMA_RETRY_DELAY` (seconds before retry, default 1.0). Ollama HTTP client is reused per thread for connection reuse. Procedure context is cached per (document, entry); cache is cleared when switching document or when setting/clearing comments or renaming procedures. MCP analysis tools validate `analysis_type` and raise a clear error if invalid.
 
 ## Uninstallation
 

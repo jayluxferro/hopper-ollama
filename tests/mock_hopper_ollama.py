@@ -4,12 +4,48 @@ Used when running tests (python in sys.executable); Hopper injects the real Docu
 """
 
 
+class MockSegment:
+    """Minimal segment mock for list_strings / list_segments tests."""
+
+    _name = "__cstring"
+    _start = 0x1000
+    _length = 0x1000
+    _strings = [
+        (0x2000, "hello"),
+        (0x2008, "world"),
+        (0x2010, "https://example.com"),
+    ]
+
+    def getName(self):
+        return self._name
+
+    def getStartingAddress(self):
+        return self._start
+
+    def getLength(self):
+        return self._length
+
+    def getStringCount(self):
+        return len(self._strings)
+
+    def getStringAtIndex(self, i):
+        if 0 <= i < len(self._strings):
+            return self._strings[i][1]
+        return None
+
+    def getStringAddressAtIndex(self, i):
+        if 0 <= i < len(self._strings):
+            return self._strings[i][0]
+        return 0
+
+
 class MockDoc:
     """Single document mock."""
 
     def __init__(self, name: str = "mock_binary", entry_point: int = 0x1000):
         self._name = name
         self._entry_point = entry_point
+        self._segment_with_strings = MockSegment()
 
     def getDocumentName(self):
         return self._name
@@ -22,6 +58,17 @@ class MockDoc:
 
     def getSegmentCount(self):
         return 1
+
+    def getSegment(self, index):
+        if index == 0:
+            return self._segment_with_strings
+        return None
+
+    def getSegmentByName(self, name):
+        return None
+
+    def getCurrentSegment(self):
+        return None
 
     def backgroundProcessActive(self):
         return False
@@ -39,6 +86,18 @@ class MockDoc:
 
     def log(self, msg):
         pass
+
+    def getSelectionAddressRange(self):
+        """No selection in mock."""
+        return None
+
+    def getRawSelectedLines(self):
+        """No selection in mock."""
+        return []
+
+    def getCurrentAddress(self):
+        """Mock cursor at entry point."""
+        return self._entry_point
 
 
 # Default docs for tests
@@ -59,6 +118,11 @@ class Document:
     @classmethod
     def getAllDocuments(cls):
         return list(cls._all)
+
+    @classmethod
+    def ask(cls, msg, default=None):
+        """Mock: no UI; return None (cancel) or default."""
+        return default
 
     @classmethod
     def set_current_for_tests(cls, doc_index: int):
