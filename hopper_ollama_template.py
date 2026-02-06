@@ -10,6 +10,7 @@ HopperOllama: In-Hopper script + MCP server for Ollama-powered binary analysis.
 
 import sys
 import os
+import time
 
 # Path injection for Hopper plugin (do not add imports before this block)
 if "python" not in sys.executable:
@@ -40,6 +41,10 @@ from fastmcp import FastMCP
 doc = Document.getCurrentDocument()
 
 mcp = FastMCP(name="HopperOllama")
+
+# Capture for launch_both_servers() so run_server_ollama always uses this script's doc/mcp
+_ollama_doc = doc
+_ollama_mcp = mcp
 
 # ---------------------------------------------------------------------------
 # Inlined: Ollama client + prompts (no hopper_ollama package import)
@@ -374,20 +379,27 @@ Compare these two functions: similarities, differences, and how they might relat
 
 def run_server_ollama():
     import traceback
+    # Uvicorn installs signal handlers that don't work in threads and can hang; disable them.
     try:
-        doc.log("[HopperOllama] Server thread started, calling mcp.run()...")
-        mcp.run(transport="http", host="127.0.0.1", port=42070)
+        import uvicorn
+        uvicorn.Server.install_signal_handlers = lambda *_, **__: None
+    except Exception:
+        pass
+    try:
+        _ollama_doc.log("[HopperOllama] Server thread started, calling mcp.run()...")
+        _ollama_mcp.run(transport="http", host="127.0.0.1", port=42070)
     except Exception as e:
         tb = traceback.format_exc()
         msg = f"[HopperOllama] Server failed: {e}\n{tb}"
+        print(msg)  # always print so it's visible in console
         try:
-            doc.log(msg)
+            _ollama_doc.log(msg)
         except Exception:
-            print(msg)
+            pass
 
 
 def launch_server_ollama():
-    """Start the HopperOllama MCP server on port 42070. Blocks the console until the server stops (keeps the connection reliable)."""
+    """Start the HopperOllama MCP server on port 42070. Blocks the console until the server stops."""
     print("Starting HopperOllama server on port 42070...")
     server_thread = threading.Thread(target=run_server_ollama, daemon=False)
     server_thread.start()
@@ -408,15 +420,17 @@ def launch_both_servers():
         print("HopperPyMCP is not loaded. Run the HopperPyMCP script first, then run this script again.")
         print("Then call launch_both_servers() to start both servers.")
         return
-    t1 = threading.Thread(target=pymcp_runner, daemon=False)
-    t2 = threading.Thread(target=run_server_ollama, daemon=False)
-    t1.start()
-    t2.start()
+    t_ollama = threading.Thread(target=run_server_ollama, daemon=False)
+    t_pymcp = threading.Thread(target=pymcp_runner, daemon=False)
+    # Start Ollama first so it binds to 42070 before PyMCP runs; short delay avoids startup race
+    t_ollama.start()
+    time.sleep(0.5)
+    t_pymcp.start()
     print("Both servers started. Console will block until they stop.")
     print("  HopperPyMCP:  http://localhost:42069/mcp/")
     print("  HopperOllama: http://localhost:42070/mcp/")
-    t1.join()
-    t2.join()
+    t_ollama.join()
+    t_pymcp.join()
 
 
 # ---------------------------------------------------------------------------
